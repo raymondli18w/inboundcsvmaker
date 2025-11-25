@@ -74,7 +74,7 @@ COLUMN_SYNONYMS = {
 }
 
 # =========================
-# Address Validation (optional if no country)
+# Address Validation
 # =========================
 CANADA_PROVINCES = ["AB","BC","MB","NB","NL","NS","NT","NU","ON","PE","QC","SK","YT"]
 US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS",
@@ -84,7 +84,7 @@ US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","I
 def validate_address(row):
     country_raw = row.get("Country/Region", "")
     if pd.isna(country_raw) or str(country_raw).strip() == "":
-        return "Valid"  # No address → skip validation
+        return "Valid"
     country = str(country_raw).strip().upper()
     province = str(row.get("state", "")).strip()
     postal = str(row.get("Zip Code", "")).strip().replace(" ", "")
@@ -103,7 +103,7 @@ def validate_address(row):
     return "Valid"
 
 # =========================
-# Date Parser: flexible → MM/DD/YYYY
+# Date Parser
 # =========================
 def parse_to_mm_dd_yyyy(date_input, format_hint="auto", custom_format=""):
     if pd.isna(date_input) or str(date_input).strip() == '':
@@ -215,10 +215,10 @@ def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
     df = standardize_headers(df)
 
     required_cols = ['Sales Order No.', 'Item No.', 'Each Qty', 'CLIENT', 'WHSE', 'Pick Date']
-    missing_required = [col for col in required_cols if col not in df.columns]
-    if missing_required:
-        st.error(f"Missing required columns: {', '.join(missing_required)}")
-        return None
+    for col in required_cols:
+        if col not in df.columns:
+            st.error(f"Required column missing: '{col}'")
+            return None
 
     optional_cols = [
         'Ship To', 'Ship To Code', 'Ship To Address 2', 'Street', 'City', 'state', 'Zip Code', 'Country/Region',
@@ -247,7 +247,7 @@ def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
 
     df = check_address_consistency(df)
     if df['Address_Mismatch'].any():
-        st.error("⚠️ Address mismatch detected for some Sales Order Numbers!")
+        st.error("⚠️ Address mismatch detected!")
         st.dataframe(df[df['Address_Mismatch']][['Sales Order No.', 'Street', 'City', 'state', 'Zip Code', 'Country/Region']])
         return None
 
@@ -279,7 +279,7 @@ def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
             out_row['B'] = trim_text(row.get('CLIENT', ''), 10)
             out_row['C'] = trim_text(row['Sales Order No.'], 30)
             out_row['D'] = trim_text(row.get('Customer PO', ''), 30)
-            out_row['E'] = date_val  # MM/DD/YYYY
+            out_row['E'] = date_val
             out_row['G'] = trim_text(row.get('Ship To Code', ''), 10)
             out_row['H'] = trim_text(row.get('Ship To', ''), 45)
             out_row['J'] = trim_text(row.get('Street', ''), 30)
@@ -295,14 +295,18 @@ def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
             out_row['T'] = trim_text(row.get('Ref 2', ''), 30)
             out_row['U'] = trim_text(row.get('Ref 3', ''), 30)
             out_row['V'] = trim_text(row['Item No.'], 20)
-            out_row['W'] = trim_text(row['Each Qty'], 10)  # Quantity
+            # ✅ Quantity is preserved exactly as input (string, trimmed to 10 chars)
+            out_row['W'] = trim_text(row['Each Qty'], 10)
             output_rows.append(out_row)
 
     if not output_rows:
-        st.warning("No valid rows found. Ensure all required fields are present and valid.")
+        st.warning("No valid rows found.")
         return None
     else:
         st.info(f"✅ Processed {len(output_rows)} valid row(s).")
+        # 🔍 Optional: uncomment below to preview output before download
+        # st.subheader("Preview (first 5 rows):")
+        # st.dataframe(pd.DataFrame(output_rows).head())
 
     return pd.DataFrame(output_rows)
 
@@ -313,8 +317,8 @@ st.title("Inbound TSV to CSV Converter")
 st.markdown("""
 Paste your TSV data below.  
 ✅ **Required fields**: `Sales Order`, `Item No.`, `Qty`, `CLIENT`, `WHSE`, `Pick Date`  
-✅ **Output date format**: `MM/DD/YYYY`  
-✅ Address fields are optional but validated if present.
+✅ **Quantity is output exactly as entered** (e.g., `1.5`, `2`, `100`)  
+✅ **Date output**: `MM/DD/YYYY`
 """)
 
 raw_data = st.text_area("Paste your TSV data here:", height=300)
