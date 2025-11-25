@@ -297,6 +297,7 @@ def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
             out_row['V'] = trim_text(row['Item No.'], 20)
             # ✅ Quantity is preserved exactly as input (string, trimmed to 10 chars)
             out_row['W'] = trim_text(row['Each Qty'], 10)
+            out_row['X'] = trim_text(row['Each Qty'], 10)
             output_rows.append(out_row)
 
     if not output_rows:
