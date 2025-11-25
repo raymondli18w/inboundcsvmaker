@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 from io import StringIO
+from datetime import datetime
 
 # =========================
-# Column synonyms mapping (updated to match your input)
+# Column synonyms mapping
 # =========================
 COLUMN_SYNONYMS = {
     'Sales Order No.': [
@@ -73,7 +74,7 @@ COLUMN_SYNONYMS = {
 }
 
 # =========================
-# Address Validation (now optional)
+# Address Validation (optional if no country)
 # =========================
 CANADA_PROVINCES = ["AB","BC","MB","NB","NL","NS","NT","NU","ON","PE","QC","SK","YT"]
 US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS",
@@ -83,40 +84,80 @@ US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","I
 def validate_address(row):
     country_raw = row.get("Country/Region", "")
     if pd.isna(country_raw) or str(country_raw).strip() == "":
-        # No country → no address provided → treat as valid (optional)
-        return "Valid"
-    
+        return "Valid"  # No address → skip validation
     country = str(country_raw).strip().upper()
     province = str(row.get("state", "")).strip()
     postal = str(row.get("Zip Code", "")).strip().replace(" ", "")
-
     if country not in ["CA", "US"]:
         return "Invalid country"
-    
     if country == "CA":
         if postal and len(postal) != 6:
             return "Invalid Canadian postal code"
         if province.upper() not in CANADA_PROVINCES:
             return "Invalid province"
     elif country == "US":
-        if postal and len(postal) > 5 and len(postal) != 9:
+        if postal and not (len(postal) == 5 or len(postal) == 9):
             return "Invalid US ZIP code"
         if province.upper() not in US_STATES:
             return "Invalid state"
-    
     return "Valid"
 
 # =========================
-# Trim helper
+# Date Parser: flexible → MM/DD/YYYY
+# =========================
+def parse_to_mm_dd_yyyy(date_input, format_hint="auto", custom_format=""):
+    if pd.isna(date_input) or str(date_input).strip() == '':
+        return None
+    date_str = str(date_input).strip()
+
+    format_map = {
+        "MM/DD/YYYY": "%m/%d/%Y",
+        "MM-DD-YYYY": "%m-%d-%Y",
+        "YYYY-MM-DD": "%Y-%m-%d",
+        "DD/MM/YYYY": "%d/%m/%Y",
+        "DD-MM-YYYY": "%d-%m-%Y",
+        "YYYY/MM/DD": "%Y/%m/%d",
+        "MM/DD/YY": "%m/%d/%y",
+        "YYYYMMDD": "%Y%m%d",
+    }
+
+    if format_hint == "auto":
+        formats = list(format_map.values()) + ["%m/%d/%y", "%m-%d-%y", "%d %b %Y", "%b %d, %Y", "%d-%b-%Y"]
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                if fmt.endswith("%y") and dt.year < 1900:
+                    dt = dt.replace(year=dt.year + 100)
+                return dt.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+        return None
+
+    elif format_hint == "custom":
+        try:
+            dt = datetime.strptime(date_str, custom_format)
+            return dt.strftime("%m/%d/%Y")
+        except (ValueError, TypeError):
+            return None
+
+    else:
+        fmt = format_map.get(format_hint, format_hint)
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            if fmt.endswith("%y") and dt.year < 1900:
+                dt = dt.replace(year=dt.year + 100)
+            return dt.strftime("%m/%d/%Y")
+        except ValueError:
+            return None
+
+# =========================
+# Helpers
 # =========================
 def trim_text(val, max_len):
     if pd.isna(val) or str(val).strip() == "":
         return ''
     return str(val).strip()[:max_len]
 
-# =========================
-# Standardize headers
-# =========================
 def standardize_headers(df):
     mapping = {}
     for std_col, synonyms in COLUMN_SYNONYMS.items():
@@ -126,75 +167,62 @@ def standardize_headers(df):
     df.rename(columns=mapping, inplace=True)
     return df
 
-# =========================
-# Fill blank/mixed rows with first valid row
-# =========================
 def fill_blank_rows(df):
     first_valid_row = None
     for idx, row in df.iterrows():
+        so = row.get('Sales Order No.', '')
+        item = row.get('Item No.', '')
         if first_valid_row is None:
-            # Consider a row "valid" if it has Sales Order No. and Item No.
-            so = row.get('Sales Order No.', '')
-            item = row.get('Item No.', '')
             if pd.notna(so) and str(so).strip() != '' and pd.notna(item) and str(item).strip() != '':
                 first_valid_row = row.copy()
         elif first_valid_row is not None:
             for col in df.columns:
                 if pd.isna(row[col]) or str(row[col]).strip() == '':
                     row[col] = first_valid_row.get(col, '')
-            # Don't auto-fill CLIENT as 'deleteme' unless you need it — remove if not
     return df
 
-# =========================
-# Address consistency check (only if address is provided)
-# =========================
 def check_address_consistency(df):
     mismatch_flag = []
     addr_cols = ['Ship To', 'Ship To Address 2', 'Street', 'City', 'state', 'Zip Code', 'Country/Region']
-    
     for _, row in df.iterrows():
         so_no = str(row.get('Sales Order No.', '')).strip()
-        if not so_no:
+        if not so_no or not str(row.get('Country/Region', '')).strip():
             mismatch_flag.append(False)
             continue
-
-        # Only validate consistency if this row has a country (i.e., address is intended)
-        if not str(row.get('Country/Region', '')).strip():
-            mismatch_flag.append(False)
-            continue
-
         same_so_rows = df[df['Sales Order No.'] == so_no]
         current_addr = tuple(str(row.get(col, '')).strip() for col in addr_cols)
-
-        # Compare only against other rows that also have address data
         mismatch = False
         for _, r in same_so_rows.iterrows():
-            if str(r.get('Country/Region', '')).strip():  # only compare if r has address
+            if str(r.get('Country/Region', '')).strip():
                 other_addr = tuple(str(r.get(col, '')).strip() for col in addr_cols)
                 if other_addr != current_addr:
                     mismatch = True
                     break
-
         mismatch_flag.append(mismatch)
-
     df['Address_Mismatch'] = mismatch_flag
     return df
 
 # =========================
-# Main TSV Processing
+# Main Processing Function
 # =========================
-def process_inbound_tsv(raw_text):
+def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
     try:
         df = pd.read_csv(StringIO(raw_text), delimiter='\t', dtype=str)
     except Exception as e:
-        st.error(f"Error parsing TSV data: {e}")
+        st.error(f"Error parsing TSV: {e}")
         return None
 
     df = standardize_headers(df)
 
+    required_cols = ['Sales Order No.', 'Item No.', 'Each Qty', 'CLIENT', 'WHSE', 'Pick Date']
+    missing_required = [col for col in required_cols if col not in df.columns]
+    if missing_required:
+        st.error(f"Missing required columns: {', '.join(missing_required)}")
+        return None
+
     optional_cols = [
         'Ship To', 'Ship To Code', 'Ship To Address 2', 'Street', 'City', 'state', 'Zip Code', 'Country/Region',
-        'Customer PO', 'Ref 1', 'Ref 2', 'Ref 3', 'Carrier Code', 'Carrier Name', 'WHSE', 'CLIENT'
+        'Customer PO', 'Ref 1', 'Ref 2', 'Ref 3', 'Carrier Code', 'Carrier Name'
     ]
     for col in optional_cols:
         if col not in df.columns:
@@ -203,30 +231,55 @@ def process_inbound_tsv(raw_text):
     df = fill_blank_rows(df)
     df['Validation Status'] = df.apply(validate_address, axis=1)
 
+    # Parse dates
+    if date_format_hint == "custom":
+        df['Pick Date Clean'] = df['Pick Date'].apply(
+            lambda x: parse_to_mm_dd_yyyy(x, format_hint="custom", custom_format=custom_format)
+        )
+    else:
+        df['Pick Date Clean'] = df['Pick Date'].apply(
+            lambda x: parse_to_mm_dd_yyyy(x, format_hint=date_format_hint)
+        )
+
+    invalid_date_rows = df[df['Pick Date Clean'].isna() & df['Pick Date'].notna()]
+    if not invalid_date_rows.empty:
+        st.warning(f"⚠️ {len(invalid_date_rows)} row(s) have unparseable dates and will be skipped.")
+
     df = check_address_consistency(df)
     if df['Address_Mismatch'].any():
-        st.error("⚠️ Address mismatch detected! Some Sales Order Numbers have conflicting addresses.")
-        st.dataframe(df[df['Address_Mismatch']][['Sales Order No.', 'Ship To', 'Street', 'City', 'state', 'Zip Code', 'Country/Region']])
+        st.error("⚠️ Address mismatch detected for some Sales Order Numbers!")
+        st.dataframe(df[df['Address_Mismatch']][['Sales Order No.', 'Street', 'City', 'state', 'Zip Code', 'Country/Region']])
         return None
 
     output_rows = []
-    # Generate column headers A, B, C, ..., Z, AA, AB, ..., up to needed
     all_cols = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
     for _, row in df.iterrows():
-        so_val = row.get('Sales Order No.', '')
-        item_val = row.get('Item No.', '')
-        has_order = pd.notna(so_val) and str(so_val).strip() != ''
-        has_item = pd.notna(item_val) and str(item_val).strip() != ''
-        is_valid = row['Validation Status'] == "Valid"
+        so_val      = row.get('Sales Order No.', '')
+        item_val    = row.get('Item No.', '')
+        qty_val     = row.get('Each Qty', '')
+        client_val  = row.get('CLIENT', '')
+        whse_val    = row.get('WHSE', '')
+        date_val    = row['Pick Date Clean']
+        is_addr_valid = (row['Validation Status'] == "Valid")
 
-        if has_order and has_item and is_valid:
+        valid = all([
+            pd.notna(so_val) and str(so_val).strip() != '',
+            pd.notna(item_val) and str(item_val).strip() != '',
+            pd.notna(qty_val) and str(qty_val).strip() != '',
+            pd.notna(client_val) and str(client_val).strip() != '',
+            pd.notna(whse_val) and str(whse_val).strip() != '',
+            date_val is not None,
+            is_addr_valid
+        ])
+
+        if valid:
             out_row = {col: '' for col in all_cols}
             out_row['A'] = 'BC'
             out_row['B'] = trim_text(row.get('CLIENT', ''), 10)
             out_row['C'] = trim_text(row['Sales Order No.'], 30)
             out_row['D'] = trim_text(row.get('Customer PO', ''), 30)
-            out_row['E'] = trim_text(row.get('Pick Date', ''), 10)  # Date field
+            out_row['E'] = date_val  # MM/DD/YYYY
             out_row['G'] = trim_text(row.get('Ship To Code', ''), 10)
             out_row['H'] = trim_text(row.get('Ship To', ''), 45)
             out_row['J'] = trim_text(row.get('Street', ''), 30)
@@ -242,11 +295,14 @@ def process_inbound_tsv(raw_text):
             out_row['T'] = trim_text(row.get('Ref 2', ''), 30)
             out_row['U'] = trim_text(row.get('Ref 3', ''), 30)
             out_row['V'] = trim_text(row['Item No.'], 20)
+            out_row['W'] = trim_text(row['Each Qty'], 10)  # Quantity
             output_rows.append(out_row)
 
     if not output_rows:
-        st.warning("No valid rows found to process. Ensure 'Sales Order' and 'Item No' are present.")
+        st.warning("No valid rows found. Ensure all required fields are present and valid.")
         return None
+    else:
+        st.info(f"✅ Processed {len(output_rows)} valid row(s).")
 
     return pd.DataFrame(output_rows)
 
@@ -256,20 +312,58 @@ def process_inbound_tsv(raw_text):
 st.title("Inbound TSV to CSV Converter")
 st.markdown("""
 Paste your TSV data below.  
-✅ **Address fields are now optional**  
-✅ Requires only **Sales Order** and **Item No.**  
-✅ Handles your column names like `date`, `Whse`, `Client`, etc.
+✅ **Required fields**: `Sales Order`, `Item No.`, `Qty`, `CLIENT`, `WHSE`, `Pick Date`  
+✅ **Output date format**: `MM/DD/YYYY`  
+✅ Address fields are optional but validated if present.
 """)
 
 raw_data = st.text_area("Paste your TSV data here:", height=300)
+
+st.markdown("### 📅 Date Format Handling")
+date_format_option = st.selectbox(
+    "How should dates in the 'Pick Date' column be interpreted?",
+    options=[
+        "Auto-detect (recommended)",
+        "MM/DD/YYYY",
+        "MM-DD-YYYY",
+        "YYYY-MM-DD",
+        "DD/MM/YYYY",
+        "DD-MM-YYYY",
+        "YYYY/MM/DD",
+        "MM/DD/YY",
+        "YYYYMMDD",
+        "Custom format (enter below)"
+    ],
+    index=0
+)
+
+custom_format = ""
+if date_format_option == "Custom format (enter below)":
+    custom_format = st.text_input(
+        "Enter Python strftime format (e.g., %d.%m.%Y):",
+        value="%m/%d/%Y"
+    )
 
 if st.button("Generate Inbound CSV"):
     if not raw_data.strip():
         st.warning("Please paste your TSV data.")
     else:
-        processed_df = process_inbound_tsv(raw_data)
+        if date_format_option == "Custom format (enter below)":
+            if not custom_format.strip():
+                st.error("Please enter a custom date format.")
+                st.stop()
+            actual_format = "custom"
+        elif date_format_option == "Auto-detect (recommended)":
+            actual_format = "auto"
+        else:
+            actual_format = date_format_option
+
+        processed_df = process_inbound_tsv(
+            raw_data,
+            date_format_hint=actual_format,
+            custom_format=custom_format
+        )
         if processed_df is not None:
-            # Use \r\n line endings for Windows compatibility
             csv_data = processed_df.to_csv(index=False, header=False, encoding='cp1252').replace('\n', '\r\n')
             st.download_button(
                 label="📥 Download CSV",
@@ -277,4 +371,4 @@ if st.button("Generate Inbound CSV"):
                 file_name="inbound_output.csv",
                 mime="text/csv"
             )
-            st.success("✅ CSV generated! You can now download it.")
+            st.success("✅ CSV generated successfully!")
