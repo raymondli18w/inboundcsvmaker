@@ -368,7 +368,7 @@ if st.button("Generate Inbound CSV"):
             st.download_button(
                 label="📥 Download CSV",
                 data=csv_data,
-                file_name="inbound_output.csv",
+                file_name="rinbound_output.csv",
                 mime="text/csv"
             )
             st.success("✅ CSV generated successfully!")
