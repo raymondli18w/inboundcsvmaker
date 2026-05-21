@@ -203,6 +203,22 @@ def check_address_consistency(df):
     return df
 
 # =========================
+# Clean Control Characters for ANSI (Optional - reuse from outbound script if needed)
+# =========================
+def clean_ansi_content(csv_bytes):
+    """
+    Remove all control characters except:
+    - CR (0x0D) - Carriage Return
+    - LF (0x0A) - Line Feed  
+    - TAB (0x09) - Tab
+    """
+    cleaned = bytes([b for b in csv_bytes if b >= 0x20 or b in (0x09, 0x0A, 0x0D)])
+    removed_count = len(csv_bytes) - len(cleaned)
+    if removed_count > 0:
+        st.info(f"🧹 Removed {removed_count} control character(s) for ANSI compatibility")
+    return cleaned
+
+# =========================
 # Main Processing Function
 # =========================
 def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
@@ -305,21 +321,20 @@ def process_inbound_tsv(raw_text, date_format_hint="auto", custom_format=""):
         return None
     else:
         st.info(f"✅ Processed {len(output_rows)} valid row(s).")
-        # 🔍 Optional: uncomment below to preview output before download
-        # st.subheader("Preview (first 5 rows):")
-        # st.dataframe(pd.DataFrame(output_rows).head())
 
     return pd.DataFrame(output_rows)
 
 # =========================
 # Streamlit UI
 # =========================
-st.title("Inbound TSV to CSV Converter")
+st.set_page_config(page_title="Inbound TSV to ANSI CSV Converter", layout="wide")
+st.title("📥 Inbound TSV to ANSI CSV Converter")
 st.markdown("""
 Paste your TSV data below.  
 ✅ **Required fields**: `Sales Order`, `Item No.`, `Qty`, `CLIENT`, `WHSE`, `Pick Date`  
 ✅ **Quantity is output exactly as entered** (e.g., `1.5`, `2`, `100`)  
-✅ **Date output**: `MM/DD/YYYY`
+✅ **Date output**: `MM/DD/YYYY`  
+✅ **ANSI Safe Mode**: CRLF line endings + Windows-1252 encoding for legacy system compatibility
 """)
 
 raw_data = st.text_area("Paste your TSV data here:", height=300)
@@ -351,11 +366,11 @@ if date_format_option == "Custom format (enter below)":
 
 if st.button("Generate Inbound CSV"):
     if not raw_data.strip():
-        st.warning("Please paste your TSV data.")
+        st.warning("⚠️ Please paste your TSV data.")
     else:
         if date_format_option == "Custom format (enter below)":
             if not custom_format.strip():
-                st.error("Please enter a custom date format.")
+                st.error("⚠️ Please enter a custom date format.")
                 st.stop()
             actual_format = "custom"
         elif date_format_option == "Auto-detect (recommended)":
@@ -369,11 +384,31 @@ if st.button("Generate Inbound CSV"):
             custom_format=custom_format
         )
         if processed_df is not None:
-            csv_data = processed_df.to_csv(index=False, header=False, encoding='cp1252').replace('\n', '\r\n')
+            # ✅ Generate CSV with explicit CRLF line endings for Windows/ANSI compatibility
+            csv_string = processed_df.to_csv(
+                index=False, 
+                header=False, 
+                encoding='cp1252', 
+                errors='replace',
+                lineterminator='\r\n'  # ✅ Adds CR+LF for proper Windows line endings
+            )
+            
+            # Convert to bytes for download
+            csv_bytes = csv_string.encode('cp1252', errors='replace')
+            
+            # Optional: Clean control characters for ANSI compatibility (uncomment if needed)
+            # cleaned_csv_bytes = clean_ansi_content(csv_bytes)
+            
             st.download_button(
-                label="📥 Download CSV",
-                data=csv_data,
-                file_name="rinbound_output.csv",
+                label="📥 Download ANSI-safe CSV (CRLF line endings)",
+                data=csv_bytes,  # Use cleaned_csv_bytes if using clean_ansi_content
+                file_name="s_inbound_output.csv",
                 mime="text/csv"
             )
-            st.success("✅ CSV generated successfully!")
+            st.success("✅ CSV generated successfully with CRLF line endings!")
+            st.caption(f"📄 Output size: {len(csv_bytes):,} bytes (ANSI/Windows-1252 encoded)")
+            
+            # Optional preview
+            if st.checkbox("Show preview of first 5 rows"):
+                preview_df = processed_df.head(5)
+                st.dataframe(preview_df)
