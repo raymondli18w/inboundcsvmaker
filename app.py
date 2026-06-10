@@ -402,7 +402,7 @@ if st.button("Generate Inbound CSV"):
             st.download_button(
                 label="📥 Download ANSI-safe CSV (CRLF line endings)",
                 data=csv_bytes,  # Use cleaned_csv_bytes if using clean_ansi_content
-                file_name="s_inbound_output.csv",
+                file_name="r_inbound_output.csv",
                 mime="text/csv"
             )
             st.success("✅ CSV generated successfully with CRLF line endings!")
